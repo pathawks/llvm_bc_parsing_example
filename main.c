@@ -34,16 +34,40 @@
 #ifndef STDOUT_FILENO
 #define STDOUT_FILENO 1
 #endif
+#else
+#include <stdlib.h>
 #endif
 
+long long getValue(LLVMValueRef val) {
+  if (LLVMIsAConstantInt(val)) {
+    return LLVMConstIntGetSExtValue(val);
+  } else if (LLVMIsAAllocaInst(val)) {
+    printf("# alloca %d\n", LLVMGetNumOperands(val));
+    LLVMValueRef x = LLVMGetOperand(val, 0);
+    return getValue(x);
+  } else {
+    printf("# Not a constant!\n");
+    return 8;
+  }
+}
+
+const char* getValueAsString(LLVMValueRef val) {
+  val=0;
+  return ".string \"\"";
+}
+
+const char* getName(LLVMValueRef val) {
+  size_t size;
+  return LLVMGetValueName2(val, &size);
+}
+
 int main(const int argc, const char *const argv[]) {
-  if (3 != argc) {
+  if (2 != argc) {
     fprintf(stderr, "Invalid command line!\n");
     return 1;
   }
 
   const char *const inputFilename = argv[1];
-  const char *const outputFilename = argv[2];
 
   LLVMMemoryBufferRef memoryBuffer;
 
@@ -76,128 +100,65 @@ int main(const int argc, const char *const argv[]) {
   // done with the memory buffer now, so dispose of it
   LLVMDisposeMemoryBuffer(memoryBuffer);
 
+  size_t length = 0;
+  const char* sourceFile = LLVMGetSourceFileName(module, &length);
+  if (*sourceFile) printf("# Source File: %s\n", sourceFile);
+  printf(".global _main\n"
+         ".equ _main, main\n");
+
   // loop through all the functions in the module
   for (LLVMValueRef function = LLVMGetFirstFunction(module); function;
        function = LLVMGetNextFunction(function)) {
+    if (!LLVMIsDeclaration(function)) {
+      printf("%s:\t# Function\n"
+             "\tpushq\t%%rbp     \t# Save Old Base Pointer\n"
+             "\tmovq\t%%rsp, %%rbp\t# Save Old Stack Pointer\n", getName(function));
+    } else {
+      const char* func = getName(function);
+      printf("# External function declaration: %s\n"
+             ".equ %s, _%s\n", func, func, func);
+    }
     // loop through all the basic blocks in the function
     for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
          basicBlock; basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
-      // we'll keep track of the last instruction that we seen (for reasons that
-      // will become clearer later)
-      LLVMValueRef lastInstruction = 0;
+      const char* basicBlockName = LLVMGetBasicBlockName(basicBlock);
+      if (*basicBlockName) printf("%s:\t# Basic Block\n", basicBlockName);
 
       // loop through all the instructions in the basic block
-      for (LLVMValueRef instruction = LLVMGetFirstInstruction(basicBlock);
-           instruction;) {
-        LLVMValueRef replacementValue = 0;
+      for (
+           LLVMValueRef instruction = LLVMGetFirstInstruction(basicBlock);
+           instruction;
+           instruction = LLVMGetNextInstruction(instruction)
+      ) {
 
+        const char* llvm = LLVMPrintValueToString(instruction) + 2;
         // look for math instructions
-        if (LLVMIsABinaryOperator(instruction)) {
-          // we have a binary operator, which always has two operands
+        if (LLVMIsAAllocaInst(instruction)) {
+          LLVMValueRef x = LLVMGetOperand(instruction, 0);
+          printf("\tsubq\t$%llu, %%rsp\t# LLVM: %s\n", getValue(x), llvm);
+        } else if (LLVMIsAReturnInst(instruction)) {
+          LLVMValueRef x = LLVMGetOperand(instruction, 0);
+          printf("\tmovl\t$%llu, %%eax\t# LLVM: %s\n"
+                 "\tmovq\t%%rbp, %%rsp\t# Restore Old Stack Pointer\n"
+                 "\tpopq\t%%rbp     \t# Restore Old Base Pointer\n"
+                 "\tretq            \t# Return from function\n", getValue(x), llvm);
+        } else if (LLVMIsAStoreInst(instruction)) {
           LLVMValueRef x = LLVMGetOperand(instruction, 0);
           LLVMValueRef y = LLVMGetOperand(instruction, 1);
-
-          // check if each argument is a constant
-          const int allConstant = LLVMIsAConstant(x) && LLVMIsAConstant(y);
-
-          if (allConstant) {
-            switch (LLVMGetInstructionOpcode(instruction)) {
-            default:
-              break;
-            case LLVMAdd:
-              replacementValue = LLVMConstAdd(x, y);
-              break;
-            case LLVMFAdd:
-              replacementValue = LLVMConstFAdd(x, y);
-              break;
-            case LLVMSub:
-              replacementValue = LLVMConstSub(x, y);
-              break;
-            case LLVMFSub:
-              replacementValue = LLVMConstFSub(x, y);
-              break;
-            case LLVMMul:
-              replacementValue = LLVMConstMul(x, y);
-              break;
-            case LLVMFMul:
-              replacementValue = LLVMConstFMul(x, y);
-              break;
-            case LLVMUDiv:
-              replacementValue = LLVMConstUDiv(x, y);
-              break;
-            case LLVMSDiv:
-              replacementValue = LLVMConstSDiv(x, y);
-              break;
-            case LLVMFDiv:
-              replacementValue = LLVMConstFDiv(x, y);
-              break;
-            case LLVMURem:
-              replacementValue = LLVMConstURem(x, y);
-              break;
-            case LLVMSRem:
-              replacementValue = LLVMConstSRem(x, y);
-              break;
-            case LLVMFRem:
-              replacementValue = LLVMConstFRem(x, y);
-              break;
-            case LLVMShl:
-              replacementValue = LLVMConstShl(x, y);
-              break;
-            case LLVMLShr:
-              replacementValue = LLVMConstLShr(x, y);
-              break;
-            case LLVMAShr:
-              replacementValue = LLVMConstAShr(x, y);
-              break;
-            case LLVMAnd:
-              replacementValue = LLVMConstAnd(x, y);
-              break;
-            case LLVMOr:
-              replacementValue = LLVMConstOr(x, y);
-              break;
-            case LLVMXor:
-              replacementValue = LLVMConstXor(x, y);
-              break;
-            }
-          }
-        }
-
-        // if we managed to find a more optimal replacement
-        if (replacementValue) {
-          // replace all uses of the old instruction with the new one
-          LLVMReplaceAllUsesWith(instruction, replacementValue);
-
-          // erase the instruction that we've replaced
-          LLVMInstructionEraseFromParent(instruction);
-
-          // if we don't have a previous instruction, get the first one from the
-          // basic block again
-          if (!lastInstruction) {
-            instruction = LLVMGetFirstInstruction(basicBlock);
-          } else {
-            instruction = LLVMGetNextInstruction(lastInstruction);
-          }
+          printf("\tmovq\t$%llu, %llu        \t# LLVM: %s\n", getValue(x), getValue(y), llvm);
+        } else if (LLVMIsACallInst(instruction)) {
+          LLVMValueRef y = LLVMGetOperand(instruction, 1);
+          printf("\tcallq\t%-8s\t# LLVM: %s\n", getName(y), llvm);
         } else {
-          lastInstruction = instruction;
-          instruction = LLVMGetNextInstruction(instruction);
+          printf("\t# UNKNOWN INSTRUCTION\t# LLVM:\t%s\n", llvm);
         }
       }
     }
+    puts("");
   }
-
-  // check if we are to write our output file to stdout
-  if (('-' == outputFilename[0]) && ('\0' == outputFilename[1])) {
-    if (0 != LLVMWriteBitcodeToFD(module, STDOUT_FILENO, 0, 0)) {
-      fprintf(stderr, "Failed to write bitcode to stdout!\n");
-      LLVMDisposeModule(module);
-      return 1;
-    }
-  } else {
-    if (0 != LLVMWriteBitcodeToFile(module, outputFilename)) {
-      fprintf(stderr, "Failed to write bitcode to file\n");
-      LLVMDisposeModule(module);
-      return 1;
-    }
+  for (LLVMValueRef global = LLVMGetFirstGlobal(module); global;
+       global = LLVMGetNextGlobal(global)) {
+    printf("%s: %s\n", getName(global), getValueAsString(global));
   }
 
   LLVMDisposeModule(module);
