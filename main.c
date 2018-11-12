@@ -44,7 +44,11 @@ long long getValue(LLVMValueRef val) {
   } else if (LLVMIsAAllocaInst(val)) {
     printf("# alloca %d\n", LLVMGetNumOperands(val));
     LLVMValueRef x = LLVMGetOperand(val, 0);
-    return getValue(x);
+    // LLVMValueKind kind = LLVMGetValueKind(x);
+    LLVMTypeRef type = LLVMTypeOf(x);
+    puts(LLVMPrintTypeToString(type));
+    printf("\n#width: %u", LLVMGetIntTypeWidth(type));
+    return LLVMGetIntTypeWidth(type) / 8;
   } else {
     printf("# Not a constant!\n");
     return 8;
